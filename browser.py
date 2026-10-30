@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 from typing import Any
 
@@ -66,10 +67,16 @@ class HeadlessBrowser:
         opts.add_argument("--disable-gpu")
         opts.add_argument(f"--window-size={self.width},{self.height}")
         opts.add_argument("--log-level=3")
+        # Never touch the desktop notification daemon: on WSLg each Chrome launch
+        # can D-Bus-activate xfce4-notifyd, which pops "Unable to start notification
+        # daemon" on the Windows side. Headless browsing needs no notifications.
+        opts.add_argument("--disable-notifications")
         # Steering away from automation banners breaks fewer sites than you'd think.
         opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-        import os as _os
-        self.driver = webdriver.Chrome(options=opts, service=Service(log_output=_os.devnull))
+        env = dict(os.environ)
+        env.pop("DBUS_SESSION_BUS_ADDRESS", None)  # keep Chrome off the session bus
+        service = Service(log_output=os.devnull, env=env)
+        self.driver = webdriver.Chrome(options=opts, service=service)
         self.driver.set_page_load_timeout(self.timeout)
         self.driver.implicitly_wait(3)
         if url:
