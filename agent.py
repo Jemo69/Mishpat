@@ -14,12 +14,12 @@ from steps import short_error
 load_dotenv()
 
 SYSTEM_PROMPT = """You test web pages with headless Selenium. On each step reply with ONE JSON tool call:
-{"action": "goto"|"snapshot"|"click"|"click_text"|"type"|"press"|"scroll"|"wait"|"back"|"reload"|"dom"|"console"|"tabs"|"tab"|"screenshot"|"assert"|"done",
+{"action": "goto"|"snapshot"|"click"|"click_text"|"type"|"press"|"scroll"|"wait"|"wait_for"|"wait_idle"|"js"|"back"|"reload"|"dom"|"console"|"tabs"|"tab"|"screenshot"|"assert"|"done",
  "selector": "<css, for click/type>", "text": "<text/url/needle>", "pixels": 800, "seconds": 5, "index": 0, "note": "<what you learned>"}
 Rules: prefer snapshot before click/type (use real selectors from snapshot). click_text clicks by visible words when selectors repeat. Clicks auto-follow _blank links into new tabs (check tabs). reads console for JS errors after key actions. waits for slow pages. Use screenshot to verify visually. End with {"action":"done","note":"<verdict PASS/FAIL + summary>"}.
 """
 
-TOOLS_HELP = "goto(url) snapshot click(selector) click_text(words) type(selector,text) press(key) scroll(pixels) wait(seconds) back reload dom console tabs tab(index) screenshot assert(needle) done"
+TOOLS_HELP = "goto(url) snapshot click(selector) click_text(words) type(selector,text) press(key) scroll(pixels) wait(seconds) wait_for(js-cond) wait_idle js(expr) back reload dom console tabs tab(index) screenshot assert(needle) done"
 
 
 def _chat(base_url: str, api_key: str, model: str, messages: list[dict[str, str]]) -> str:
@@ -51,6 +51,12 @@ def _exec(browser: HeadlessBrowser, call: dict[str, Any]) -> dict[str, Any]:
         import time as _t
         _t.sleep(float(call.get("seconds", 5)))
         result = {"ok": True, "waited": call.get("seconds", 5)}
+    elif action == "js":
+        result = browser.js(str(call.get("expression", "document.readyState")))
+    elif action == "wait_for":
+        result = browser.wait_for(str(call.get("condition", "true")), float(call.get("timeout", 15)))
+    elif action == "wait_idle":
+        result = browser.wait_idle(float(call.get("timeout", 20)))
     elif action == "back":
         result = browser.back()
     elif action == "reload":

@@ -12,9 +12,25 @@ from typing import Any
 from browser import HeadlessBrowser
 
 ACTIONS = (
-    "goto snapshot click click_text type press scroll wait "
-    "back forward reload dom console tabs tab screenshot assert"
+    "goto snapshot click click_text type press scroll wait wait_for wait_idle "
+    "back forward reload dom console tabs tab js checkpoint restore screenshot assert"
 )
+
+# Signatures that the chromedriver connection itself is gone (crash/OOM-kill).
+# When these appear, the session is unrecoverable: abort, don't keep feeding stdin.
+DRIVER_DEAD_HINTS = (
+    "failed to establish a new connection",
+    "connection refused",
+    "max retries exceeded",
+    "tried to run command without establishing a connection",
+    "no such session",
+    "session deleted",
+    "session not created",
+    "chrome not reachable",
+    "invalid session id",
+)
+
+DRIVER_LOST = "DRIVER_LOST — the browser/driver died mid-run. Aborting."
 
 
 def short_error(exc: Exception) -> str:
@@ -24,6 +40,12 @@ def short_error(exc: Exception) -> str:
     if "StaleElement" in type(exc).__name__:
         hint = " (page re-rendered mid-action — just retry the command)"
     return f"{type(exc).__name__}: {msg}{hint}"
+
+
+def is_driver_dead(exc: Exception) -> bool:
+    """True when the driver connection itself is gone (not an app error)."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(h in text for h in DRIVER_DEAD_HINTS)
 
 
 def do_step(b: HeadlessBrowser, s: dict[str, Any]) -> dict[str, Any]:
@@ -44,6 +66,16 @@ def do_step(b: HeadlessBrowser, s: dict[str, Any]) -> dict[str, Any]:
     if a == "wait":
         time.sleep(float(s.get("seconds", 2)))
         return {"ok": True, "waited": s.get("seconds", 2)}
+    if a == "wait_for":
+        return b.wait_for(s["condition"], float(s.get("timeout", 15)))
+    if a == "wait_idle":
+        return b.wait_idle(float(s.get("timeout", 20)))
+    if a == "js":
+        return b.js(s["expression"])
+    if a == "checkpoint":
+        return b.checkpoint(s["path"])
+    if a == "restore":
+        return b.restore(s["path"])
     if a == "back":
         return b.back()
     if a == "forward":

@@ -16,6 +16,12 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+def short_exc(exc: Exception) -> str:
+    """One-line error, no stack trace."""
+    msg = str(exc).splitlines()[0][:300] if str(exc) else type(exc).__name__
+    return f"{type(exc).__name__}: {msg}"
+
+
 SNAPSHOT_JS = """
 const els = Array.from(document.querySelectorAll(
   'a, button, input, select, textarea, [role="button"], [role="link"], [onclick]'
@@ -47,6 +53,8 @@ class HeadlessBrowser:
         height: int = 900,
         shots_dir: str | Path = "shots",
         timeout: int = 15,
+        quiet: bool = False,
+        driver_port: int = 0,
     ) -> None:
         self.headless = headless
         self.width = width
@@ -54,9 +62,12 @@ class HeadlessBrowser:
         self.shots_dir = Path(shots_dir)
         self.shots_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
+        self.quiet = quiet  # paths only, no base64 noise
+        self.driver_port = driver_port  # 0 = random; set to isolate parallel runs
         self.driver: webdriver.Chrome | None = None
         self._shot_count = 0
         self.tag = time.strftime("%m%d-%H%M%S")  # session prefix: shots never collide
+        self._last_elements: list[dict[str, Any]] = []
 
     def start(self, url: str | None = None) -> dict[str, Any]:
         """Launch Chromium (headless by default). Optionally navigate."""
@@ -79,7 +90,9 @@ class HeadlessBrowser:
         opts.add_experimental_option("excludeSwitches", ["enable-automation"])
         env = dict(os.environ)
         env.pop("DBUS_SESSION_BUS_ADDRESS", None)  # keep Chrome off the session bus
-        service = Service(log_output=os.devnull, env=env)
+        # --disable-dev-shm-usage (above) + isolated ports: the two classic fixes for
+        # headless-Chrome crashes and driver collisions under parallel runs.
+        service = Service(log_output=os.devnull, env=env, port=self.driver_port)
         self.driver = webdriver.Chrome(options=opts, service=service)
         self.driver.set_page_load_timeout(self.timeout)
         self.driver.implicitly_wait(3)
@@ -102,9 +115,10 @@ class HeadlessBrowser:
         return {"ok": True, "url": d.current_url, "title": d.title}
 
     def snapshot(self) -> dict[str, Any]:
-        """URL + title + interactive elements (refs the agent can click/type)."""
+        """URL + title + interactive elements ([N] refs are re-clickable via click)."""
         d = self._require()
         elements: list[dict[str, Any]] = d.execute_script(SNAPSHOT_JS)
+        self._last_elements = elements
         return {
             "ok": True,
             "url": d.current_url,
@@ -131,9 +145,24 @@ class HeadlessBrowser:
             time.sleep(0.2)
         return {"followed_new_tab": False, "tabs": len(d.window_handles), "url": d.current_url}
 
+    def _resolve_index(self, selector: str) -> str:
+        """Accept a snapshot ref like [12]: resolve to its selector. Guaranteed re-clickable."""
+        import re as _re
+
+        m = _re.fullmatch(r"\[(\d+)\]", selector.strip())
+        if not m:
+            return selector
+        if not self._last_elements:
+            raise LookupError("no snapshot taken yet — run snapshot first, then click [N]")
+        i = int(m.group(1))
+        if not 0 <= i < len(self._last_elements):
+            raise LookupError(f"snapshot ref [{i}] out of range (0..{len(self._last_elements) - 1})")
+        return self._last_elements[i]["selector"]
+
     def click(self, selector: str) -> dict[str, Any]:
-        """Click first element matching a CSS selector. Retries stale races, follows new tabs."""
+        """Click first element matching a CSS selector (or a snapshot [N] ref)."""
         d = self._require()
+        selector = self._resolve_index(selector)
         before = list(d.window_handles)
 
         def _do() -> None:
@@ -265,8 +294,103 @@ class HeadlessBrowser:
             "entries": [{"level": e.get("level"), "message": e.get("message", "")[:500]} for e in entries],
         }
 
+    def js(self, expression: str) -> dict[str, Any]:
+        """Evaluate a JS expression, return JSON-able result. Sets auth, reads state, polls."""
+        d = self._require()
+        try:
+            value = d.execute_script(f"return ({expression})")
+        except Exception as exc:
+            raise RuntimeError(f"js failed: {short_exc(exc)}")
+        try:
+            import json as _json
+
+            _json.dumps(value)
+            return {"ok": True, "value": value}
+        except (TypeError, ValueError):
+            return {"ok": True, "value": str(value)}
+
+    def wait_for(self, condition: str, timeout: float = 15) -> dict[str, Any]:
+        """Poll a JS boolean until true. A broken expression fails fast (first eval raises)."""
+        d = self._require()
+        try:
+            if d.execute_script(f"return !!({condition})"):
+                return {"ok": True, "condition": condition}
+        except Exception as exc:
+            raise RuntimeError(f"bad wait_for expression {condition!r}: {short_exc(exc)}")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if d.execute_script(f"return !!({condition})"):
+                    return {"ok": True, "condition": condition}
+            except Exception:
+                pass  # transient mid-poll (navigation); keep polling
+            time.sleep(0.5)
+        raise TimeoutError(f"wait_for timed out after {timeout}s: {condition}")
+
+    def wait_idle(self, timeout: float = 20) -> dict[str, Any]:
+        """Wait for hydration to settle: document ready + DOM quiet for ~1s.
+
+        Call after goto before click/type on JS-heavy apps — guards against
+        native-form-submit-before-hydration (credentials in URL) surprises."""
+        d = self._require()
+        deadline = time.time() + timeout
+        last_count, quiet_since = -1, 0.0
+        while time.time() < deadline:
+            try:
+                ready = d.execute_script("return document.readyState")
+                count = len(d.find_elements(By.CSS_SELECTOR, "*"))
+            except Exception:
+                time.sleep(0.5)
+                continue
+            now = time.time()
+            if ready == "complete" and count == last_count:
+                if now - quiet_since >= 1.0:
+                    return {"ok": True, "idle_after_s": round(now - (deadline - timeout), 1)}
+            else:
+                quiet_since = now
+            last_count = count
+            time.sleep(0.5)
+        raise TimeoutError(f"page never idled within {timeout}s")
+
+    def checkpoint(self, path: str | Path) -> dict[str, Any]:
+        """Save session state (URL, cookies, local+session storage) to a file.
+
+        Restore it later to skip UI login: `shell --restore ck.json`."""
+        d = self._require()
+        state = {
+            "url": d.current_url,
+            "cookies": d.get_cookies(),
+            "localStorage": d.execute_script("return Object.assign({}, window.localStorage);"),
+            "sessionStorage": d.execute_script("return Object.assign({}, window.sessionStorage);"),
+        }
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(__import__("json").dumps(state))
+        return {"ok": True, "path": str(out)}
+
+    def restore(self, path: str | Path) -> dict[str, Any]:
+        """Restore a checkpoint: cookies + storage back, land logged-in."""
+        import json as _json
+
+        d = self._require()
+        state = _json.loads(Path(path).read_text())
+        d.get(state["url"])  # domain must match before cookies can be set
+        d.delete_all_cookies()
+        for c in state.get("cookies", []):
+            c.pop("sameSite", None)  # chromedriver rejects unrecognized values
+            try:
+                d.add_cookie(c)
+            except Exception:
+                pass
+        for k, v in (state.get("localStorage") or {}).items():
+            d.execute_script("window.localStorage.setItem(arguments[0], arguments[1]);", k, v)
+        for k, v in (state.get("sessionStorage") or {}).items():
+            d.execute_script("window.sessionStorage.setItem(arguments[0], arguments[1]);", k, v)
+        d.get(state["url"])
+        return {"ok": True, "url": d.current_url, "title": d.title}
+
     def screenshot(self, name: str | None = None) -> dict[str, Any]:
-        """Capture viewport PNG into shots dir. Returns path (agent reads this file)."""
+        """Capture viewport PNG into shots dir. quiet=True returns path only (parseable stdout)."""
         d = self._require()
         self._shot_count += 1
         out = Path(name) if name else self.shots_dir / f"shot-{self.tag}-{self._shot_count:03d}.png"
@@ -274,8 +398,11 @@ class HeadlessBrowser:
             out = self.shots_dir / out.name if out.parent == Path(".") else out
         out.parent.mkdir(parents=True, exist_ok=True)
         d.save_screenshot(str(out))
-        raw = base64.b64encode(out.read_bytes()).decode() if out.exists() else ""
-        return {"ok": True, "path": str(out), "png_base64": raw[:200] + "…(truncated, read file)" if raw else ""}
+        result: dict[str, Any] = {"ok": True, "path": str(out)}
+        if not self.quiet:
+            raw = base64.b64encode(out.read_bytes()).decode() if out.exists() else ""
+            result["png_base64"] = raw[:200] + "…(truncated, read file)" if raw else ""
+        return result
 
     def quit(self) -> dict[str, Any]:
         if self.driver is not None:

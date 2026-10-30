@@ -56,7 +56,9 @@ Script format (`tests/demo.json`) — same verbs in `run`, `record`, `shell`, `h
   {"action": "tabs"}
 ]
 ```
-Verbs: `goto snapshot click click_text type press scroll wait back forward reload dom console tabs tab screenshot assert`.
+Verbs: `goto snapshot click click_text type press scroll wait wait_for wait_idle js back forward reload dom console tabs tab checkpoint restore screenshot assert`.
+
+Agent accelerators: `js <expr>` (set localStorage tokens, read state — skips the 60s UI login), `checkpoint <file>` / `--restore` (resume logged-in sessions), `wait_for <js>` + `wait_idle` (conditions over blind sleeps; `wait_idle` after `goto` guards pre-hydration native submits), `click [N]` (snapshot refs beat hostile CSS), `--quiet` (paths only, parseable stdout), `--driver-port N` (parallel-run isolation), `ASSERT_PASS/FAIL` tokens, `DRIVER_LOST` + exit 2 on driver death.
 
 REPL extras: `dom raw` (unwrapped HTML for grep), `tab <n>` (jump tabs — clicks auto-follow `_blank`), `console` (JS errors in-terminal). Shots are session-prefixed (`shot-MMDD-HHMMSS-001.png`) so runs never overwrite each other. Typing hidden inputs fails loudly; stale-element races retry once; errors are one-liners.
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -12,16 +13,30 @@ from rich import print as rprint
 
 from agent import run_agent
 from browser import HeadlessBrowser
-from steps import ACTIONS, do_step, short_error
+from steps import ACTIONS, DRIVER_LOST, do_step, is_driver_dead, short_error
 from video import stitch_frames
 
 load_dotenv()
 
+# P0: piped runs must stream. Line-buffer stdout so background runs never go
+# silent for minutes; each REPL iteration also flushes explicitly below.
+sys.stdout.reconfigure(line_buffering=True)
+
 app = typer.Typer(help="Headless Selenium for AI agents: shell, screenshots, autonomous tests, MCP.")
 
 
-def _browser(headless: bool, shots_dir: str, width: int, height: int) -> HeadlessBrowser:
-    return HeadlessBrowser(headless=headless, shots_dir=shots_dir, width=width, height=height)
+def _browser(
+    headless: bool,
+    shots_dir: str,
+    width: int,
+    height: int,
+    quiet: bool = False,
+    driver_port: int = 0,
+) -> HeadlessBrowser:
+    return HeadlessBrowser(
+        headless=headless, shots_dir=shots_dir, width=width, height=height,
+        quiet=quiet, driver_port=driver_port,
+    )
 
 
 @app.command()
@@ -29,6 +44,9 @@ def shell(
     url: str = typer.Option("https://example.com", help="Starting URL"),
     headed: bool = typer.Option(False, help="Show a visible browser (default: headless)"),
     shots_dir: str = typer.Option("shots", help="Where screenshots are saved"),
+    quiet: bool = typer.Option(False, help="Paths only, no base64 noise (parseable stdout)"),
+    driver_port: int = typer.Option(0, help="Chromedriver port; set to isolate parallel runs"),
+    restore: str = typer.Option(None, help="Checkpoint file to restore (skips UI login)"),
 ) -> None:
     """Interactive REPL. The agent (or human) types commands; every step prints a screenshot path.
 
@@ -39,10 +57,13 @@ def shell(
         mishpat> click "a.more-info"\n
         mishpat> assert "IANA"
     """
-    b = _browser(headless=not headed, shots_dir=shots_dir, width=1280, height=900)
+    b = _browser(headless=not headed, shots_dir=shots_dir, width=1280, height=900,
+                  quiet=quiet, driver_port=driver_port)
     rprint(f"[bold green]Mishpat headless shell[/]  headless={not headed}  shots=./{shots_dir}/")
     rprint("[dim]Type `help` for commands. `quit` closes the browser.[/]")
     rprint(b.start(url))
+    if restore:
+        rprint(b.restore(restore))
     while True:
         try:
             line = input("mishpat> ").strip()
@@ -54,7 +75,7 @@ def shell(
         cmd, args = parts[0].lower(), parts[1:]
         try:
             if cmd in ("help", "h"):
-                rprint("goto <url> | snapshot | click <sel> | click_text <text> | type <sel> <text> | press [KEY] | scroll [px] | wait <secs> | back | forward | reload | tabs | tab <n> | dom [raw] | console | screenshot | assert <text> | quit")
+                rprint("goto <url> | snapshot | click <sel|[N]> | click_text <text> | type <sel> <text> | js <expr> | wait <secs> | wait_for <js> [timeout] | wait_idle | press [KEY] | scroll [px] | back | forward | reload | tabs | tab <n> | dom [raw] | console | checkpoint <file> | restore <file> | screenshot | assert <text> | quit")
             elif cmd == "goto" and args:
                 rprint(b.goto(args[0]))
                 rprint(b.screenshot())
@@ -89,6 +110,23 @@ def shell(
                 import time as _t
                 _t.sleep(float(args[0]))
                 rprint(f"waited {args[0]}s"); rprint(b.screenshot())
+            elif cmd == "js":
+                # raw remainder: shlex would eat the quotes JS string literals need
+                rprint(b.js(line.split(None, 1)[1] if " " in line else "true"))
+            elif cmd == "wait_for" and args:
+                raw = line.split(None, 1)[1]
+                head, _, tail = raw.rpartition(" ")
+                if head and tail.replace(".", "", 1).isdigit():
+                    expr, timeout = head, float(tail)
+                else:
+                    expr, timeout = raw, 15.0
+                rprint(b.wait_for(expr, timeout))
+            elif cmd == "wait_idle":
+                rprint(b.wait_idle(float(args[0]) if args else 20.0))
+            elif cmd == "checkpoint" and args:
+                rprint(b.checkpoint(args[0]))
+            elif cmd == "restore" and args:
+                rprint(b.restore(args[0]))
             elif cmd == "dom":
                 limit = 8000
                 raw = False
@@ -113,7 +151,8 @@ def shell(
             elif cmd == "screenshot":
                 rprint(b.screenshot(args[0] if args else None))
             elif cmd == "assert" and args:
-                rprint(b.assert_text(" ".join(args)))
+                r = b.assert_text(" ".join(args))
+                rprint(f"{'ASSERT_PASS' if r['ok'] else 'ASSERT_FAIL'}: {r}")
             elif cmd == "url":
                 rprint(b.snapshot()["url"])
             elif cmd in ("quit", "exit", "q"):
@@ -121,8 +160,13 @@ def shell(
                 break
             else:
                 rprint(f"[red]Unknown or incomplete command:[/] {line}  (try `help`)")
-        except Exception as exc:  # keep the shell alive; the agent retries
+            sys.stdout.flush()
+        except Exception as exc:
+            if is_driver_dead(exc):
+                rprint(f"[red]{DRIVER_LOST}[/]")
+                raise typer.Exit(code=2)
             rprint(f"[red]{short_error(exc)}[/]")
+            sys.stdout.flush()
 
 
 @app.command()
@@ -142,14 +186,20 @@ def screenshot(
 
 @app.command()
 def run(
-    script: str = typer.Argument(..., help="JSON file: [{\"action\": \"goto\"|\"click\"|\"type\"|\"assert\"|\"screenshot\", ...}]"),
+    script: str = typer.Argument(..., help="JSON file of actions (see README for verbs). Stops on first failure."),
     headed: bool = typer.Option(False, help="Show browser instead of headless"),
     shots_dir: str = typer.Option("shots"),
+    quiet: bool = typer.Option(False, help="Paths only, no base64 noise"),
+    driver_port: int = typer.Option(0, help="Chromedriver port; set to isolate parallel runs"),
+    restore: str = typer.Option(None, help="Checkpoint file to restore (skips UI login)"),
 ) -> None:
-    """Run a repeatable scripted test. Each step auto-screenshots."""
+    """Run a repeatable scripted test. Each step auto-screenshots. Stops on first failure (exit 1); driver death exits 2."""
     steps: list[dict] = json.loads(Path(script).read_text())
-    b = _browser(headless=not headed, shots_dir=shots_dir, width=1280, height=900)
+    b = _browser(headless=not headed, shots_dir=shots_dir, width=1280, height=900,
+                  quiet=quiet, driver_port=driver_port)
     b.start()
+    if restore:
+        rprint(b.restore(restore))
     results = []
     failed = 0
     for i, s in enumerate(steps, 1):
@@ -158,10 +208,15 @@ def run(
             r = do_step(b, s)
             shot = b.screenshot()
             rprint(f"step {i} {a}: {str(r)[:300]}  📸 {shot['path']}")
+            sys.stdout.flush()
             results.append({"step": i, "action": a, "result": r, "shot": shot["path"]})
         except Exception as exc:
+            if is_driver_dead(exc):
+                rprint(f"[red]{DRIVER_LOST} (step {i}: {a})[/]")
+                raise typer.Exit(code=2)
             failed += 1
             rprint(f"[red]step {i} {a} FAILED: {short_error(exc)}[/]")
+            sys.stdout.flush()
             results.append({"step": i, "action": a, "error": short_error(exc)})
     b.quit()
     rprint(f"[bold]{'FAIL' if failed else 'PASS'}[/]  {len(results)-failed}/{len(results)} steps ok")
@@ -192,10 +247,13 @@ def record(
     headed: bool = typer.Option(False, help="Show browser while recording"),
     fps: int = typer.Option(2, help="Video framerate"),
     shots_dir: str = typer.Option("shots"),
+    quiet: bool = typer.Option(True, help="Paths only in output (default on for record)"),
+    driver_port: int = typer.Option(0, help="Chromedriver port; set to isolate parallel runs"),
 ) -> None:
     """Record a test run to MP4 (local ffmpeg, free). Scripted or auto-scroll tour."""
     import json as _json
-    b = _browser(headless=not headed, shots_dir=shots_dir, width=1280, height=900)
+    b = _browser(headless=not headed, shots_dir=shots_dir, width=1280, height=900,
+                  quiet=quiet, driver_port=driver_port)
     b.start(url)
     frames: list[str] = [b.screenshot()["path"]]
     if script:
@@ -204,8 +262,12 @@ def record(
             try:
                 do_step(b, s)
             except Exception as exc:
+                if is_driver_dead(exc):
+                    rprint(f"[red]{DRIVER_LOST}[/]")
+                    raise typer.Exit(code=2)
                 rprint(f"[red]record step {s.get('action')} failed: {short_error(exc)}[/]")
             frames.append(b.screenshot()["path"])
+            sys.stdout.flush()
     else:  # auto-scroll tour: 6 scroll steps for a demo clip
         for _ in range(6):
             b.scroll(600)
@@ -219,6 +281,8 @@ def helpful(
     url: str = typer.Option("https://example.com", help="Starting URL"),
     video_out: str = typer.Option("shots/helpful.mp4", help="MP4 to write on quit"),
     shots_dir: str = typer.Option("shots"),
+    quiet: bool = typer.Option(False, help="Paths only, no base64 noise"),
+    driver_port: int = typer.Option(0, help="Chromedriver port; set to isolate parallel runs"),
 ) -> None:
     """Helpful mode: VISIBLE browser + guided REPL + every step recorded to MP4.
 
@@ -226,7 +290,8 @@ def helpful(
     browser, narrate/record screen with OBS if you want voiceover, and a clean
     MP4 of the run is stitched on quit. All local — no paid recording service.
     """
-    b = _browser(headless=False, shots_dir=shots_dir, width=1280, height=900)
+    b = _browser(headless=False, shots_dir=shots_dir, width=1280, height=900,
+                  quiet=quiet, driver_port=driver_port)
     rprint("[bold green]Mishpat helpful mode[/]  visible browser, recording every step")
     rprint(f"[dim]Drive the page, then `quit` stitches {video_out}. Commands: goto/click/type/press/scroll/back/reload/snapshot/screenshot/assert/url/quit[/]")
     rprint(b.start(url))
@@ -242,7 +307,7 @@ def helpful(
         cmd, args = parts[0].lower(), parts[1:]
         try:
             if cmd in ("help", "h"):
-                rprint("goto <url> | snapshot | click <sel> | click_text <text> | type <sel> <text> | press [KEY] | scroll [px] | wait <secs> | back | forward | reload | tabs | tab <n> | dom [raw] | console | screenshot | assert <text> | quit")
+                rprint("goto <url> | snapshot | click <sel|[N]> | click_text <text> | type <sel> <text> | js <expr> | wait <secs> | wait_for <js> [timeout] | wait_idle | press [KEY] | scroll [px] | back | forward | reload | tabs | tab <n> | dom [raw] | console | checkpoint <file> | restore <file> | screenshot | assert <text> | quit")
             elif cmd == "goto" and args:
                 rprint(b.goto(args[0])); frames.append(b.screenshot()["path"])
             elif cmd == "snapshot":
@@ -262,6 +327,22 @@ def helpful(
                 import time as _t
                 _t.sleep(float(args[0]))
                 rprint(f"waited {args[0]}s"); frames.append(b.screenshot()["path"])
+            elif cmd == "js":
+                rprint(b.js(line.split(None, 1)[1] if " " in line else "true"))
+            elif cmd == "wait_for" and args:
+                raw = line.split(None, 1)[1]
+                head, _, tail = raw.rpartition(" ")
+                if head and tail.replace(".", "", 1).isdigit():
+                    expr, timeout = head, float(tail)
+                else:
+                    expr, timeout = raw, 15.0
+                rprint(b.wait_for(expr, timeout)); frames.append(b.screenshot()["path"])
+            elif cmd == "wait_idle":
+                rprint(b.wait_idle(float(args[0]) if args else 20.0))
+            elif cmd == "checkpoint" and args:
+                rprint(b.checkpoint(args[0]))
+            elif cmd == "restore" and args:
+                rprint(b.restore(args[0]))
             elif cmd == "back":
                 rprint(b.back()); frames.append(b.screenshot()["path"])
             elif cmd == "forward":
@@ -286,8 +367,7 @@ def helpful(
                 rprint(shot); frames.append(shot["path"])
             elif cmd == "assert" and args:
                 r = b.assert_text(" ".join(args))
-                rprint(r)
-                rprint("[green]confirmed" if r["ok"] else "[red]not found")
+                rprint(f"{'ASSERT_PASS' if r['ok'] else 'ASSERT_FAIL'}: {r}")
             elif cmd == "url":
                 rprint(b.snapshot()["url"])
             elif cmd in ("quit", "exit", "q"):
@@ -295,8 +375,13 @@ def helpful(
                 break
             else:
                 rprint(f"[red]Unknown:[/] {line}")
+            sys.stdout.flush()
         except Exception as exc:
+            if is_driver_dead(exc):
+                rprint(f"[red]{DRIVER_LOST}[/]")
+                raise typer.Exit(code=2)
             rprint(f"[red]{short_error(exc)}[/]")
+            sys.stdout.flush()
     rprint(stitch_frames(frames, video_out))
 
 
@@ -374,6 +459,18 @@ def mcp() -> None:
     def browser_console(limit: int = 20) -> dict:
         """Recent browser console entries: JS errors, failed requests."""
         return browser.console(limit=limit)
+
+    @server.tool
+    def browser_js(expression: str) -> dict:
+        """Evaluate JS, return JSON-able value. Set auth tokens, read state, poll conditions."""
+        return browser.js(expression)
+
+    @server.tool
+    def browser_wait_idle(timeout: float = 20) -> dict:
+        """Wait for hydration to settle (ready + DOM quiet). Call after goto before clicking."""
+        out = browser.wait_idle(timeout)
+        out["screenshot"] = browser.screenshot()["path"]
+        return out
 
     browser.start()
     server.run()
