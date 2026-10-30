@@ -1,0 +1,12 @@
+[
+  {"action": "goto", "url": "https://jeremy-nwachukwu.vercel.app/"},
+  {"action": "scroll", "pixels": 900},
+  {"action": "scroll", "pixels": 1600},
+  {"action": "goto", "url": "https://jeremy-nwachukwu.vercel.app/blog"},
+  {"action": "scroll", "pixels": 700},
+  {"action": "goto", "url": "https://jeremy-nwachukwu.vercel.app/about"},
+  {"action": "scroll", "pixels": 700},
+  {"action": "goto", "url": "https://jeremy-nwachukwu.vercel.app/contact"},
+  {"action": "goto", "url": "https://jeremy-nwachukwu.vercel.app/"},
+  {"action": "click", "selector": "a.blogrow.group"}
+]

@@ -118,6 +118,20 @@ class HeadlessBrowser:
         el.click()
         return {"ok": True, "clicked": selector, "url": d.current_url}
 
+    def click_text(self, text: str) -> dict[str, Any]:
+        """Click first button/link/tab whose visible text contains `text`."""
+        d = self._require()
+        lit = f'"{text}"' if "'" not in text else f"'{text}'"
+        xp = (
+            f"//*[self::a or self::button or self::div[@role='tab'] or self::span]"
+            f"[contains(normalize-space(), {lit})]"
+        )
+        els = [e for e in d.find_elements(By.XPATH, xp) if e.is_displayed()]
+        if not els:
+            raise LookupError(f"no visible control containing text: {text!r}")
+        els[0].click()
+        return {"ok": True, "clicked_text": text, "url": d.current_url}
+
     def type_text(self, selector: str, text: str, submit: bool = False) -> dict[str, Any]:
         """Clear + fill an input/textarea matching a CSS selector."""
         d = self._require()

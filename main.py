@@ -53,7 +53,7 @@ def shell(
         cmd, args = parts[0].lower(), parts[1:]
         try:
             if cmd in ("help", "h"):
-                rprint("goto <url> | snapshot | click <selector> | type <selector> <text...> | press [KEY] | scroll [px] | back | forward | reload | dom | screenshot [name] | assert <text> | url | quit")
+                rprint("goto <url> | snapshot | click <sel> | type <sel> <text> | press [KEY] | scroll [px] | wait <secs> | back | reload | screenshot | assert <text> | quit")
             elif cmd == "goto" and args:
                 rprint(b.goto(args[0]))
                 rprint(b.screenshot())
@@ -65,6 +65,9 @@ def shell(
                 rprint(f"[dim]{len(snap['elements'])} interactive elements[/]")
             elif cmd == "click" and args:
                 rprint(b.click(args[0]))
+                rprint(b.screenshot())
+            elif cmd == "click_text" and args:
+                rprint(b.click_text(" ".join(args)))
                 rprint(b.screenshot())
             elif cmd == "type" and len(args) >= 2:
                 rprint(b.type_text(args[0], " ".join(args[1:])))
@@ -81,6 +84,10 @@ def shell(
                 rprint(b.forward()); rprint(b.screenshot())
             elif cmd == "reload":
                 rprint(b.reload()); rprint(b.screenshot())
+            elif cmd == "wait" and args:
+                import time as _t
+                _t.sleep(float(args[0]))
+                rprint(f"waited {args[0]}s"); rprint(b.screenshot())
             elif cmd == "dom":
                 d = b.dom()
                 rprint(f"[dim]{d['length']} chars[/]\n{d['html'][:3000]}")
