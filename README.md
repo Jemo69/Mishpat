@@ -56,7 +56,18 @@ Script format (`tests/demo.json`):
 
 ## Give the agent browser-use with no visible window
 
-Add to `~/.config/opencode/opencode.json`:
+Wired on this machine for all four coding CLIs (Claude Code, Codex, OpenCode, Pi):
+
+| CLI | Skill | MCP |
+|---|---|---|
+| Claude Code | `~/.claude/skills/mishpat` (symlink) | `claude mcp add --scope user mishpat-headless -- uv run --project /home/jemo/projects/Mishpat /home/jemo/projects/Mishpat/main.py mcp` ✅ connected |
+| Codex | `~/.codex/skills/mishpat` (symlink) | `[mcp_servers.mishpat-headless]` in `~/.codex/config.toml` |
+| OpenCode | `~/.config/opencode/skills/personal/mishpat` (symlink) | `mishpat-headless` in `~/.config/opencode/opencode.json` |
+| Pi | `~/.agents/skills/mishpat` (native) | `mishpat-headless` in `~/.pi/agent/mcp.json` |
+
+Single source of truth: `/home/jemo/.agents/skills/mishpat/` — the rest are symlinks.
+
+Manual OpenCode snippet (already applied above):
 
 ```json
 {
