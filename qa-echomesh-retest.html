@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ECHOMESH HEADLESS QA — FULL RETEST</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; color: #fff; font-family: Montserrat, "Segoe UI", Roboto, sans-serif; padding: 32px 20px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  .plaque { border: 3px solid #fff; border-radius: 10px; padding: 10px 22px; display: inline-block; font-weight: 800; letter-spacing: 2px; font-size: 14px; }
+  h1 { font-size: 44px; font-weight: 800; letter-spacing: 1px; margin: 22px 0 8px; line-height: 1.05; }
+  .sub { color: #bbb; font-size: 16px; margin-bottom: 26px; }
+  .card { border: 2px solid #fff; border-radius: 10px; padding: 22px 24px; margin: 18px 0; background: #000; }
+  .card.white { background: #fff; color: #000; }
+  .card.white .sub2 { color: #333; }
+  h2 { font-size: 20px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 12px; }
+  h3 { font-size: 16px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; margin: 16px 0 8px; }
+  p, li { font-size: 15px; line-height: 1.65; }
+  .sub2 { color: #bbb; font-size: 14px; margin-top: 6px; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin-bottom: 6px; }
+  code { background: #1a1a1a; border: 1px solid #555; border-radius: 6px; padding: 1px 7px; font-size: 13px; }
+  .card.white code { background: #eee; border-color: #999; }
+  .sev { display: inline-block; font-weight: 800; font-size: 13px; letter-spacing: 1.5px; border-radius: 8px; padding: 4px 12px; margin-bottom: 10px; text-transform: uppercase; }
+  .sev.crit { background: #fff; color: #000; }
+  .sev.high { background: #000; color: #fff; border: 2px solid #fff; }
+  .sev.low { background: #222; color: #fff; border: 1px solid #888; }
+  .verdict { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
+  .stat { border: 2px solid #fff; border-radius: 10px; padding: 12px 20px; text-align: center; min-width: 130px; }
+  .stat b { display: block; font-size: 30px; }
+  .stat span { font-size: 12px; letter-spacing: 1.5px; font-weight: 800; text-transform: uppercase; }
+  .stat.bad b { background: #fff; color: #000; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+  th { text-transform: uppercase; letter-spacing: 1px; font-size: 12px; text-align: left; border-bottom: 2px solid #fff; padding: 8px; }
+  td { border-bottom: 1px solid #444; padding: 8px; vertical-align: top; }
+  .pass { font-weight: 800; }
+  .fail { font-weight: 800; background: #fff; color: #000; padding: 1px 8px; border-radius: 6px; }
+  .foot { margin-top: 34px; color: #888; font-size: 13px; }
+  a { color: #fff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="plaque">ECHOMESH // HEADLESS QA</div>
+  <h1>FULL RETEST FROM LOGIN.</h1>
+  <p class="sub">Ran 2026-10-29 with Mishpat headless Chromium (Selenium). Fresh account, every click screenshotted, every claim backed by pixels. Three bugs survived contact with the app — one of them kills a headline feature.</p>
+
+  <div class="card">
+    <h2>VERDICT</h2>
+    <p>The core loop is real: register → event → form → field → public link → anonymous submission → results table all works. But external sharing is dead on arrival, the AI Copilot is down for anyone without their own key, and submission delete does nothing. Ship the loop, fix the three below before demoing sharing or AI.</p>
+    <div class="verdict">
+      <div class="stat bad"><b>2</b><span>SEVERE</span></div>
+      <div class="stat bad"><b>1</b><span>HIGH</span></div>
+      <div class="stat"><b>3</b><span>MINOR</span></div>
+      <div class="stat"><b>25+</b><span>PASSING</span></div>
+    </div>
+    <p class="sub2">Test accounts created (please delete): jemolife69+mishpat@gmail.com (Mishpat Tester) and jemolife69+mishpat2@gmail.com (Retest Agent). Test data: events “Sunday Service Test”, “Retest Sunday”, forms “Visitor Checkin Test”, “Retest Slide Form”.</p>
+  </div>
+
+  <div class="card white">
+    <div class="sev crit">SEVERE — BUG 01</div>
+    <h2>External share links are dead</h2>
+    <p>Created a password-protected share link from the Share tab. The UI shows it proudly with Copy and Revoke buttons, creation date 10/29/2026, expiry 11/5/2026. Visiting the link gives <b>“Link Not Found — The link you are trying to access does not exist.”</b></p>
+    <h3>Repro</h3>
+    <ol>
+      <li>Log in → event → form → Share tab → <code>Create share link</code></li>
+      <li>Set password <code>ShareTest123</code>, submit. Link appears: <code>/shared/ff329083…25df4e</code></li>
+      <li>Open that URL logged out. First load: blank page, empty title. After settling: Link Not Found.</li>
+    </ol>
+    <h3>Evidence</h3>
+    <ul>
+      <li>Screenshots: link displayed in-app vs. Link Not Found page on the URL.</li>
+      <li>Browser console is clean — no JS crash, only a font 404 and a manifest warning. The page renders its error state correctly, so the frontend is fine; the lookup behind it resolves nothing.</li>
+    </ul>
+    <h3>How bad</h3>
+    <p>Feature-level kill. Anyone you send a “secure results link” to hits a dead page, and the app told you the link was live. Suspects, in order: token/ID mismatch between create and read, row not committed or RLS-blocked on read, wrong route param. Check what the create endpoint stores vs. what <code>/shared/[token]</code> queries.</p>
+  </div>
+
+  <div class="card white">
+    <div class="sev crit">SEVERE — BUG 02</div>
+    <h2>AI Copilot is down, and it leaks raw provider JSON</h2>
+    <p>Sent “How many submissions do we have?” The thread is created, then the answer slot fills with a raw error string instead of a reply:</p>
+    <p><code>PROVIDER_ERROR:402:{"error":{"message":"Insufficient credits. Add more using https://openrouter.ai/settings/credits",...}}</code></p>
+    <h3>Two failures, not one</h3>
+    <ul>
+      <li><b>Shared OpenRouter key is out of credits.</b> Copilot is 100% down for every team that has not wired BYOK. The Settings page says “Shared server key. No setup needed” — that promise is currently false.</li>
+      <li><b>Raw provider JSON is rendered to the user.</b> Nobody outside engineering should ever see <code>PROVIDER_ERROR:402</code> plus a billing URL. Catch it, show “The AI service is unavailable right now,” log the rest.</li>
+    </ul>
+    <h3>How bad</h3>
+    <p>Whole Copilot surface is decorative until credits or messaging change. Top up the shared key or gate the UI honestly (“AI unavailable — add a team key in Settings”), and sanitize provider errors everywhere, not just this call.</p>
+  </div>
+
+  <div class="card">
+    <div class="sev high">HIGH — BUG 03</div>
+    <h2>Results row Delete does nothing</h2>
+    <p>Clicked Delete on a submission row in two separate sessions. No confirm dialog, no toast, no error, row still there on re-read. The button is visually alive and completely inert.</p>
+    <h3>How bad</h3>
+    <p>Data hygiene is broken — test and junk submissions cannot be removed through the UI, which also means the Trash restore/permanent-delete flow is untestable and unverified. Likely a missing handler or a confirm modal that never mounts. Wire it or remove it; a dead destructive button erodes trust fast.</p>
+  </div>
+
+  <div class="card">
+    <div class="sev low">MINOR</div>
+    <h2>Small stuff</h2>
+    <ul>
+      <li><b>Empty event name submits silently.</b> Pressing Enter with a blank Event Name does nothing — no error, no shake, no hint. The <code>*</code> says required; say it out loud when it fails.</li>
+      <li><b>Login takes 20–25 seconds</b> headless before the dashboard lands. Everything downstream pays this tax. If it is a cold start, fine — but measure it; if it is a waterfall of auth calls, fix it.</li>
+      <li><b>Cosmetic console noise:</b> <code>source-serif-4-latin.woff2</code> 404s, manifest <code>orientation</code> value warning. Harmless, but free to silence.</li>
+      <li><b>Duplicate-question footgun (mine, not yours):</b> my retries created two identical “Your Email” questions on the slide. A real user double-clicking Save could do the same — consider disabling Save while the request is in flight.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>WHAT PASSES</h2>
+    <p>All of this was driven end to end, headless, with screenshots at every step:</p>
+    <table>
+      <tr><th>AREA</th><th>RESULT</th><th>NOTES</th></tr>
+      <tr><td>Register</td><td class="pass">PASS</td><td>New account created, auto-logged into dashboard</td></tr>
+      <tr><td>Login / Logout</td><td class="pass">PASS</td><td>Both directions; slow (see minor)</td></tr>
+      <tr><td>Event create</td><td class="pass">PASS</td><td>Modal, ENTER submits, auto-navigates in</td></tr>
+      <tr><td>Form create (Standard)</td><td class="pass">PASS</td><td>Verified in run 1</td></tr>
+      <tr><td>Form create (Slide)</td><td class="pass">PASS</td><td>Radio via <code>input[value="slide"]</code> works</td></tr>
+      <tr><td>Add Slide + question</td><td class="pass">PASS</td><td>Save Field and ENTER both persist</td></tr>
+      <tr><td>Public Standard form</td><td class="pass">PASS</td><td>Anonymous fill → Thank You page</td></tr>
+      <tr><td>Public Slide form</td><td class="pass">PASS</td><td>Start screen → prev/submit nav → confirmation; separate <code>/slide-form/</code> route</td></tr>
+      <tr><td>Results table</td><td class="pass">PASS</td><td>Row, timestamp, View Details, Export CSV/JSON render</td></tr>
+      <tr><td>All Submissions</td><td class="pass">PASS</td><td>Aggregates across events; Trash section renders</td></tr>
+      <tr><td>Check-In tab</td><td class="pass">PASS</td><td>Renders with Enable toggle</td></tr>
+      <tr><td>AI Sorts tab</td><td class="pass">PASS</td><td>Question picker, keywords, Run button render (run not executed — no data need)</td></tr>
+      <tr><td>Appointments &amp; Queue</td><td class="pass">PASS</td><td>Console, capacity stats render; queue paused state honest</td></tr>
+      <tr><td>QR Print Studio</td><td class="pass">PASS</td><td>Auto-selects new event/form, live QR, poster preview, download button</td></tr>
+      <tr><td>Share tab UI</td><td class="pass">PASS</td><td>Link creation flow works — only the produced link is dead (Bug 01)</td></tr>
+      <tr><td>Copilot UI</td><td class="pass">PASS</td><td>Threads, rename/delete, suggestions render — answers fail (Bug 02)</td></tr>
+      <tr><td>Settings</td><td class="pass">PASS</td><td>API Keys card, OpenRouter default + team/personal BYOK fields</td></tr>
+    </table>
+    <p class="sub2">Deliberately not tested: Export downloads, Check-In enable flow, queue enable, event Rename/Duplicate/Delete, View Details, Forgot password, slide Launch Slide Builder deep-customize, dark mode, mobile widths.</p>
+  </div>
+
+  <div class="card">
+    <h2>HOW THE TESTING ITSELF STRUGGLED</h2>
+    <p>Honest log of where the harness fought back — some of it is your app, most of it was my tooling, all of it cost sessions:</p>
+    <ul>
+      <li><b>Async waits.</b> Login and modal submits outrun fixed sleeps. Added a <code>wait &lt;secs&gt;</code> command to the CLI mid-test; 20–25s after login, 3–5s after submits. Without it, snapshots race the SPA and read stale states.</li>
+      <li><b>Ambiguous selectors.</b> <code>button.btn.btn-primary</code> matches Sign In, New Event, Create Form, Add Field — first-match clicking is a loaded gun. Added <code>click_text</code> (click by visible text); that is what unblocked the tabs.</li>
+      <li><b>Preview opens <code>_blank</code>.</b> Headless driver stays on the old tab with no tab-switch command, so Preview looked broken until I pulled the href directly. Multi-tab flows need tab support in the CLI.</li>
+      <li><b>Hidden-input trap.</b> Typing into a not-yet-opened modal input reports success, then ENTER goes nowhere. Burned a full session. The CLI should assert visibility, not just presence.</li>
+      <li><b>Stale elements after login navigation.</b> The SPA re-renders post-auth; any element grabbed across that boundary dies. Settling waits fixed it.</li>
+      <li><b>Duplicate test data.</b> Retries created twin questions. Harmless here, but it is exactly how a double-clicking user would pollute a form — hence the disable-while-saving note above.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>SUGGESTED FIX ORDER</h2>
+    <ol>
+      <li>Make <code>/shared/[token]</code> resolve what create stores — or stop showing the link until it does. (Bug 01)</li>
+      <li>Top up the shared OpenRouter key and wrap provider errors in a human message. (Bug 02)</li>
+      <li>Wire the Delete confirm path, then exercise Trash restore + permanent delete. (Bug 03)</li>
+      <li>Validation feedback on empty required fields; measure the login waterfall; silence the font/manifest 404s.</li>
+    </ol>
+  </div>
+
+  <p class="foot">TESTED WITH MISHPAT HEADLESS SELENIUM · EVIDENCE: shots/echo-*.png + shots/re2-*.png · RUN 2026-10-29 · PRIVATE QA REPORT</p>
+
+</div>
+</body>
+</html>
