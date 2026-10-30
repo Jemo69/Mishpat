@@ -9,16 +9,17 @@ import httpx
 from dotenv import load_dotenv
 
 from browser import HeadlessBrowser
+from steps import short_error
 
 load_dotenv()
 
 SYSTEM_PROMPT = """You test web pages with headless Selenium. On each step reply with ONE JSON tool call:
-{"action": "goto"|"snapshot"|"click"|"type"|"press"|"scroll"|"back"|"reload"|"dom"|"screenshot"|"assert"|"done",
- "selector": "<css, for click/type>", "text": "<text/url/needle>", "pixels": 800, "note": "<what you learned>"}
-Rules: prefer snapshot before click/type (use real selectors from snapshot). Use screenshot to verify visually. End with {"action":"done","note":"<verdict PASS/FAIL + summary>"}.
+{"action": "goto"|"snapshot"|"click"|"click_text"|"type"|"press"|"scroll"|"wait"|"back"|"reload"|"dom"|"console"|"tabs"|"tab"|"screenshot"|"assert"|"done",
+ "selector": "<css, for click/type>", "text": "<text/url/needle>", "pixels": 800, "seconds": 5, "index": 0, "note": "<what you learned>"}
+Rules: prefer snapshot before click/type (use real selectors from snapshot). click_text clicks by visible words when selectors repeat. Clicks auto-follow _blank links into new tabs (check tabs). reads console for JS errors after key actions. waits for slow pages. Use screenshot to verify visually. End with {"action":"done","note":"<verdict PASS/FAIL + summary>"}.
 """
 
-TOOLS_HELP = "goto(url) snapshot click(selector) type(selector,text) press(key) scroll(pixels) back reload dom screenshot assert(needle) done"
+TOOLS_HELP = "goto(url) snapshot click(selector) click_text(words) type(selector,text) press(key) scroll(pixels) wait(seconds) back reload dom console tabs tab(index) screenshot assert(needle) done"
 
 
 def _chat(base_url: str, api_key: str, model: str, messages: list[dict[str, str]]) -> str:
@@ -38,12 +39,18 @@ def _exec(browser: HeadlessBrowser, call: dict[str, Any]) -> dict[str, Any]:
         result = browser.goto(str(call.get("text", "")))
     elif action == "click":
         result = browser.click(str(call.get("selector", "")))
+    elif action == "click_text":
+        result = browser.click_text(str(call.get("text", "")))
     elif action == "type":
         result = browser.type_text(str(call.get("selector", "")), str(call.get("text", "")))
     elif action == "press":
         result = browser.press(str(call.get("text", "ENTER")))
     elif action == "scroll":
         result = browser.scroll(int(call.get("pixels", 800)))
+    elif action == "wait":
+        import time as _t
+        _t.sleep(float(call.get("seconds", 5)))
+        result = {"ok": True, "waited": call.get("seconds", 5)}
     elif action == "back":
         result = browser.back()
     elif action == "reload":
@@ -51,6 +58,12 @@ def _exec(browser: HeadlessBrowser, call: dict[str, Any]) -> dict[str, Any]:
     elif action == "dom":
         result = browser.dom()
         result["html"] = result["html"][:2000]  # keep context small for the LLM
+    elif action == "console":
+        result = browser.console()
+    elif action == "tabs":
+        result = browser.tabs()
+    elif action == "tab":
+        result = browser.switch_tab(int(call.get("index", 0)))
     elif action == "assert":
         result = browser.assert_text(str(call.get("text", "")))
     elif action == "screenshot":
@@ -109,7 +122,7 @@ def run_agent(
         try:
             result = _exec(browser, call)
         except Exception as exc:  # surface failures to the LLM so it can retry
-            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            result = {"ok": False, "error": short_error(exc)}
         transcript.append({"step": step, "call": call, "result": {k: v for k, v in result.items() if k != "png_base64"}})
         messages.append({"role": "assistant", "content": json.dumps(call)})
         messages.append({"role": "user", "content": f"Step {step} result: {json.dumps(result)[:3000]}"})

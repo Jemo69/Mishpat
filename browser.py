@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -54,6 +56,7 @@ class HeadlessBrowser:
         self.timeout = timeout
         self.driver: webdriver.Chrome | None = None
         self._shot_count = 0
+        self.tag = time.strftime("%m%d-%H%M%S")  # session prefix: shots never collide
 
     def start(self, url: str | None = None) -> dict[str, Any]:
         """Launch Chromium (headless by default). Optionally navigate."""
@@ -71,6 +74,7 @@ class HeadlessBrowser:
         # can D-Bus-activate xfce4-notifyd, which pops "Unable to start notification
         # daemon" on the Windows side. Headless browsing needs no notifications.
         opts.add_argument("--disable-notifications")
+        opts.set_capability("goog:loggingPrefs", {"browser": "ALL"})  # feeds console()
         # Steering away from automation banners breaks fewer sites than you'd think.
         opts.add_experimental_option("excludeSwitches", ["enable-automation"])
         env = dict(os.environ)
@@ -109,35 +113,77 @@ class HeadlessBrowser:
             "elements": elements,
         }
 
+    def _retry_once(self, fn: Callable[[], Any]) -> Any:
+        """Run fn; on a stale-element race (SPA re-rendered mid-action), retry once."""
+        try:
+            return fn()
+        except StaleElementReferenceException:
+            return fn()
+
+    def _follow_new_tab(self, d: webdriver.Chrome, before: list[str]) -> dict[str, Any]:
+        """If the click opened a tab (target=_blank), follow it. No-op otherwise."""
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            new = [h for h in d.window_handles if h not in before]
+            if new:
+                d.switch_to.window(new[0])
+                return {"followed_new_tab": True, "tabs": len(d.window_handles), "url": d.current_url}
+            time.sleep(0.2)
+        return {"followed_new_tab": False, "tabs": len(d.window_handles), "url": d.current_url}
+
     def click(self, selector: str) -> dict[str, Any]:
-        """Click first element matching a CSS selector."""
+        """Click first element matching a CSS selector. Retries stale races, follows new tabs."""
         d = self._require()
-        el = WebDriverWait(d, self.timeout).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-        )
-        el.click()
-        return {"ok": True, "clicked": selector, "url": d.current_url}
+        before = list(d.window_handles)
+
+        def _do() -> None:
+            el = WebDriverWait(d, self.timeout).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+            )
+            el.click()
+
+        try:
+            self._retry_once(_do)
+        except TimeoutException:
+            raise LookupError(f"nothing clickable matches: {selector!r}")
+        out: dict[str, Any] = {"ok": True, "clicked": selector}
+        out.update(self._follow_new_tab(d, before))
+        return out
 
     def click_text(self, text: str) -> dict[str, Any]:
-        """Click first button/link/tab whose visible text contains `text`."""
+        """Click first visible button/link/tab whose text contains `text`. Follows new tabs."""
         d = self._require()
+        before = list(d.window_handles)
         lit = f'"{text}"' if "'" not in text else f"'{text}'"
         xp = (
             f"//*[self::a or self::button or self::div[@role='tab'] or self::span]"
             f"[contains(normalize-space(), {lit})]"
         )
-        els = [e for e in d.find_elements(By.XPATH, xp) if e.is_displayed()]
-        if not els:
-            raise LookupError(f"no visible control containing text: {text!r}")
-        els[0].click()
-        return {"ok": True, "clicked_text": text, "url": d.current_url}
+
+        def _do() -> None:
+            els = [e for e in d.find_elements(By.XPATH, xp) if e.is_displayed()]
+            if not els:
+                raise LookupError(f"no visible control containing text: {text!r}")
+            els[0].click()
+
+        self._retry_once(_do)
+        out = {"ok": True, "clicked_text": text}
+        out.update(self._follow_new_tab(d, before))
+        return out
 
     def type_text(self, selector: str, text: str, submit: bool = False) -> dict[str, Any]:
-        """Clear + fill an input/textarea matching a CSS selector."""
+        """Clear + fill a VISIBLE input/textarea. Hidden matches fail loudly (closed dialog?)."""
         d = self._require()
-        el = WebDriverWait(d, self.timeout).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-        )
+        try:
+            el = self._retry_once(
+                lambda: WebDriverWait(d, self.timeout).until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
+                )
+            )
+        except TimeoutException:
+            raise LookupError(
+                f"no VISIBLE input matches: {selector!r} (missing, or hidden in a closed dialog)"
+            )
         el.clear()
         el.send_keys(text)
         if submit:
@@ -185,11 +231,45 @@ class HeadlessBrowser:
         body = d.find_element(By.TAG_NAME, "body").text
         return {"ok": text in body, "found": text in body, "needle": text}
 
+    def tabs(self) -> dict[str, Any]:
+        """List open tabs with URLs. Jump with switch_tab."""
+        d = self._require()
+        cur = d.current_window_handle
+        info: list[dict[str, Any]] = []
+        try:
+            for i, h in enumerate(d.window_handles):
+                d.switch_to.window(h)
+                info.append({"index": i, "url": d.current_url, "title": d.title})
+        finally:
+            d.switch_to.window(cur)
+        return {"ok": True, "current": d.window_handles.index(cur), "tabs": info}
+
+    def switch_tab(self, index: int) -> dict[str, Any]:
+        """Jump to tab by index (see tabs)."""
+        d = self._require()
+        handles = d.window_handles
+        if not 0 <= index < len(handles):
+            raise LookupError(f"tab {index} out of range (0..{len(handles) - 1})")
+        d.switch_to.window(handles[index])
+        return {"ok": True, "tab": index, "url": d.current_url, "title": d.title}
+
+    def console(self, limit: int = 20) -> dict[str, Any]:
+        """Recent browser console entries: JS errors, failed requests. Debug without leaving the CLI."""
+        d = self._require()
+        try:
+            entries = d.get_log("browser")[-limit:]
+        except Exception as exc:
+            return {"ok": False, "error": f"console log unavailable: {exc}"}
+        return {
+            "ok": True,
+            "entries": [{"level": e.get("level"), "message": e.get("message", "")[:500]} for e in entries],
+        }
+
     def screenshot(self, name: str | None = None) -> dict[str, Any]:
         """Capture viewport PNG into shots dir. Returns path (agent reads this file)."""
         d = self._require()
         self._shot_count += 1
-        out = Path(name) if name else self.shots_dir / f"shot-{self._shot_count:03d}.png"
+        out = Path(name) if name else self.shots_dir / f"shot-{self.tag}-{self._shot_count:03d}.png"
         if not out.is_absolute():
             out = self.shots_dir / out.name if out.parent == Path(".") else out
         out.parent.mkdir(parents=True, exist_ok=True)

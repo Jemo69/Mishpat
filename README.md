@@ -45,14 +45,20 @@ uv run python main.py helpful --url https://example.com --video-out shots/helpfu
 uv run python main.py mcp
 ```
 
-Script format (`tests/demo.json`):
+Script format (`tests/demo.json`) — same verbs in `run`, `record`, `shell`, `helpful`, MCP, agent:
 ```json
 [
   {"action": "goto", "url": "https://example.com"},
+  {"action": "click_text", "text": "Learn more"},
+  {"action": "wait", "seconds": 3},
   {"action": "assert", "text": "documentation"},
-  {"action": "click", "selector": "a"}
+  {"action": "console"},
+  {"action": "tabs"}
 ]
 ```
+Verbs: `goto snapshot click click_text type press scroll wait back forward reload dom console tabs tab screenshot assert`.
+
+REPL extras: `dom raw` (unwrapped HTML for grep), `tab <n>` (jump tabs — clicks auto-follow `_blank`), `console` (JS errors in-terminal). Shots are session-prefixed (`shot-MMDD-HHMMSS-001.png`) so runs never overwrite each other. Typing hidden inputs fails loudly; stale-element races retry once; errors are one-liners.
 
 ## Give the agent browser-use with no visible window
 

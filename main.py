@@ -12,6 +12,7 @@ from rich import print as rprint
 
 from agent import run_agent
 from browser import HeadlessBrowser
+from steps import ACTIONS, do_step, short_error
 from video import stitch_frames
 
 load_dotenv()
@@ -53,7 +54,7 @@ def shell(
         cmd, args = parts[0].lower(), parts[1:]
         try:
             if cmd in ("help", "h"):
-                rprint("goto <url> | snapshot | click <sel> | type <sel> <text> | press [KEY] | scroll [px] | wait <secs> | back | reload | screenshot | assert <text> | quit")
+                rprint("goto <url> | snapshot | click <sel> | click_text <text> | type <sel> <text> | press [KEY] | scroll [px] | wait <secs> | back | forward | reload | tabs | tab <n> | dom [raw] | console | screenshot | assert <text> | quit")
             elif cmd == "goto" and args:
                 rprint(b.goto(args[0]))
                 rprint(b.screenshot())
@@ -89,8 +90,26 @@ def shell(
                 _t.sleep(float(args[0]))
                 rprint(f"waited {args[0]}s"); rprint(b.screenshot())
             elif cmd == "dom":
-                d = b.dom()
-                rprint(f"[dim]{d['length']} chars[/]\n{d['html'][:3000]}")
+                limit = 8000
+                raw = False
+                for a in args:
+                    if a.isdigit():
+                        limit = int(a)
+                    if a == "raw":
+                        raw = True
+                d = b.dom(limit=limit)
+                if raw:
+                    print(d["html"])  # plain print: no wrapping, safe to pipe to grep
+                else:
+                    rprint(f"[dim]{d['length']} chars[/]\n{d['html'][:3000]}")
+            elif cmd == "console":
+                for e in b.console()["entries"]:
+                    rprint(f"[{e['level']}] {e['message'][:300]}")
+            elif cmd == "tabs":
+                rprint(b.tabs())
+            elif cmd == "tab" and args:
+                rprint(b.switch_tab(int(args[0])))
+                rprint(b.screenshot())
             elif cmd == "screenshot":
                 rprint(b.screenshot(args[0] if args else None))
             elif cmd == "assert" and args:
@@ -103,7 +122,7 @@ def shell(
             else:
                 rprint(f"[red]Unknown or incomplete command:[/] {line}  (try `help`)")
         except Exception as exc:  # keep the shell alive; the agent retries
-            rprint(f"[red]{type(exc).__name__}: {exc}[/]")
+            rprint(f"[red]{short_error(exc)}[/]")
 
 
 @app.command()
@@ -136,28 +155,14 @@ def run(
     for i, s in enumerate(steps, 1):
         a = s.get("action", "")
         try:
-            if a == "goto":
-                r = b.goto(s["url"])
-            elif a == "click":
-                r = b.click(s["selector"])
-            elif a == "type":
-                r = b.type_text(s["selector"], s.get("text", ""))
-            elif a == "assert":
-                r = b.assert_text(s["text"])
-                if not r["ok"]:
-                    failed += 1
-            elif a == "snapshot":
-                r = b.snapshot()
-            else:
-                r = {"ok": False, "error": f"unknown action {a}"}
-                failed += 1
+            r = do_step(b, s)
             shot = b.screenshot()
-            rprint(f"step {i} {a}: {r}  📸 {shot['path']}")
+            rprint(f"step {i} {a}: {str(r)[:300]}  📸 {shot['path']}")
             results.append({"step": i, "action": a, "result": r, "shot": shot["path"]})
         except Exception as exc:
             failed += 1
-            rprint(f"[red]step {i} {a} FAILED: {exc}[/]")
-            results.append({"step": i, "action": a, "error": str(exc)})
+            rprint(f"[red]step {i} {a} FAILED: {short_error(exc)}[/]")
+            results.append({"step": i, "action": a, "error": short_error(exc)})
     b.quit()
     rprint(f"[bold]{'FAIL' if failed else 'PASS'}[/]  {len(results)-failed}/{len(results)} steps ok")
     if failed:
@@ -196,22 +201,10 @@ def record(
     if script:
         steps: list[dict] = _json.loads(Path(script).read_text())
         for s in steps:
-            a = s.get("action", "")
             try:
-                if a == "goto":
-                    b.goto(s["url"])
-                elif a == "click":
-                    b.click(s["selector"])
-                elif a == "type":
-                    b.type_text(s["selector"], s.get("text", ""))
-                elif a == "scroll":
-                    b.scroll(int(s.get("pixels", 800)))
-                elif a == "back":
-                    b.back()
-                elif a == "reload":
-                    b.reload()
+                do_step(b, s)
             except Exception as exc:
-                rprint(f"[red]record step {a} failed: {exc}[/]")
+                rprint(f"[red]record step {s.get('action')} failed: {short_error(exc)}[/]")
             frames.append(b.screenshot()["path"])
     else:  # auto-scroll tour: 6 scroll steps for a demo clip
         for _ in range(6):
@@ -249,7 +242,7 @@ def helpful(
         cmd, args = parts[0].lower(), parts[1:]
         try:
             if cmd in ("help", "h"):
-                rprint("goto <url> | snapshot | click <sel> | type <sel> <text> | press [KEY] | scroll [px] | back | reload | screenshot | assert <text> | quit")
+                rprint("goto <url> | snapshot | click <sel> | click_text <text> | type <sel> <text> | press [KEY] | scroll [px] | wait <secs> | back | forward | reload | tabs | tab <n> | dom [raw] | console | screenshot | assert <text> | quit")
             elif cmd == "goto" and args:
                 rprint(b.goto(args[0])); frames.append(b.screenshot()["path"])
             elif cmd == "snapshot":
@@ -257,16 +250,37 @@ def helpful(
                 rprint(f"[bold]{snap['title']}[/]  {snap['url']}  ({len(snap['elements'])} elements)")
             elif cmd == "click" and args:
                 rprint(b.click(args[0])); frames.append(b.screenshot()["path"])
+            elif cmd == "click_text" and args:
+                rprint(b.click_text(" ".join(args))); frames.append(b.screenshot()["path"])
             elif cmd == "type" and len(args) >= 2:
                 rprint(b.type_text(args[0], " ".join(args[1:]))); frames.append(b.screenshot()["path"])
             elif cmd == "press":
                 rprint(b.press(args[0] if args else "ENTER")); frames.append(b.screenshot()["path"])
             elif cmd == "scroll":
                 rprint(b.scroll(int(args[0]) if args else 800)); frames.append(b.screenshot()["path"])
+            elif cmd == "wait" and args:
+                import time as _t
+                _t.sleep(float(args[0]))
+                rprint(f"waited {args[0]}s"); frames.append(b.screenshot()["path"])
             elif cmd == "back":
                 rprint(b.back()); frames.append(b.screenshot()["path"])
+            elif cmd == "forward":
+                rprint(b.forward()); frames.append(b.screenshot()["path"])
             elif cmd == "reload":
                 rprint(b.reload()); frames.append(b.screenshot()["path"])
+            elif cmd == "tabs":
+                rprint(b.tabs())
+            elif cmd == "tab" and args:
+                rprint(b.switch_tab(int(args[0]))); frames.append(b.screenshot()["path"])
+            elif cmd == "dom":
+                d = b.dom()
+                if "raw" in args:
+                    print(d["html"])
+                else:
+                    rprint(f"[dim]{d['length']} chars[/]\n{d['html'][:3000]}")
+            elif cmd == "console":
+                for e in b.console()["entries"]:
+                    rprint(f"[{e['level']}] {e['message'][:300]}")
             elif cmd == "screenshot":
                 shot = b.screenshot(args[0] if args else None)
                 rprint(shot); frames.append(shot["path"])
@@ -282,7 +296,7 @@ def helpful(
             else:
                 rprint(f"[red]Unknown:[/] {line}")
         except Exception as exc:
-            rprint(f"[red]{type(exc).__name__}: {exc}[/]")
+            rprint(f"[red]{short_error(exc)}[/]")
     rprint(stitch_frames(frames, video_out))
 
 
@@ -336,6 +350,30 @@ def mcp() -> None:
     @server.tool
     def browser_back() -> dict:
         return browser.back()
+
+    @server.tool
+    def browser_click_text(text: str) -> dict:
+        """Click first visible button/link/tab containing text. Follows _blank tabs."""
+        out = browser.click_text(text)
+        out["screenshot"] = browser.screenshot()["path"]
+        return out
+
+    @server.tool
+    def browser_tabs() -> dict:
+        """List open tabs with URLs (Preview links open new tabs)."""
+        return browser.tabs()
+
+    @server.tool
+    def browser_tab(index: int) -> dict:
+        """Jump to tab by index."""
+        out = browser.switch_tab(index)
+        out["screenshot"] = browser.screenshot()["path"]
+        return out
+
+    @server.tool
+    def browser_console(limit: int = 20) -> dict:
+        """Recent browser console entries: JS errors, failed requests."""
+        return browser.console(limit=limit)
 
     browser.start()
     server.run()
