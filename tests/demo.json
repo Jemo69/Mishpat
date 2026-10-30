@@ -1,0 +1,5 @@
+[
+  {"action": "goto", "url": "https://example.com"},
+  {"action": "assert", "text": "documentation"},
+  {"action": "snapshot"}
+]
